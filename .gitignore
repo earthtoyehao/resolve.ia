@@ -1,0 +1,49 @@
+# --- PYTHON & AMBIENTE ---
+__pycache__/
+*.py[cod]
+*$py.class
+
+# --- AMBIENTES VIRTUAIS (Onde ficam as libs instaladas) ---
+.venv/
+venv/
+env/
+ENV/
+
+# --- SEGURANÇA (CRÍTICO: Nunca suba suas chaves!) ---
+.env
+.env.local
+.streamlit/secrets.toml
+
+# --- ARQUIVOS DE MÍDIA TEMPORÁRIOS ---
+# O bot baixa e gera esses arquivos toda hora, não devem ir pro Git
+*.ogg
+*.wav
+*.mp3
+*.flac
+temp/
+
+# --- BANCO DE DADOS LOCAL (Logs) ---
+# Se você subir isso, vai sobrescrever o banco da produção
+*.db
+*.sqlite3
+instance/
+
+# --- IDE & OS (Arquivos de configuração do seu computador) ---
+.DS_Store
+.vscode/
+.idea/
+
+# --- STREAMLIT ---
+# Cache do Streamlit
+.streamlit/
+
+# --- CREWAI & CACHE DE IA ---
+# Pastas que o CrewAI ou LangChain criam as vezes
+chroma_db/
+__pycache__/
+
+# --- DEPLOY (Render/Heroku) ---
+Procfile
+requirements.txt.bak
+rag.py
+teste.py
