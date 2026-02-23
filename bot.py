@@ -52,7 +52,10 @@ class ResolveIaBlindado:
             INPUT DO USUÁRIO: "{query}"
             
             SUA TAREFA:
-            Analise o input com base APENAS no contexto acima e classifique.
+            1. Identifique os fatos chave (datas, nomes, conceitos).
+            2. Verifique se o Contexto suporta esses fatos.
+            3. Verifique se a relação de causa e efeito está correta.
+            4. Procure por "pegadinhas" (ex: "apenas", "exceto", "nunca").
             
             REGRAS RIGÍDAS DE RESPOSTA (OUTPUT):
             1. Se a afirmação for verdadeira segundo o contexto -> Responda: "CERTO"
@@ -153,49 +156,52 @@ class ResolveIaBlindado:
     def processar(self, inputs):
         user_input = inputs.get('user_input')
         fase = inputs.get('fase')
-        prioridade = inputs.get('prioridade', 'gemini') # Padrão é Gemini
+        prioridade = inputs.get('prioridade', 'groq')
 
-        # 1. Busca dados (RAG)
+        # 1. Busca RAG (O segredo do sucesso está aqui)
         contexto = self._buscar_rag(user_input)
+        if not contexto:
+            return "⚠️ Erro: Não encontrei material sobre isso na base de dados.", "Sistema"
 
-        # 2. Monta o Prompt Único
         prompt_final = self._montar_prompt(user_input, contexto, fase)
 
-        # 3. Define a ordem de execução baseada na prioridade
-        ordem_tentativa = []
-        
-        if prioridade == 'groq':
-            ordem_tentativa = [
-                ('groq', self.groq_ok, self._chamar_groq, "Groq ⚡"),
-                ('gemini', self.gemini_ok, self._chamar_gemini, "Gemini 💎")
-            ]
-        else: # prioridade == 'gemini'
-            ordem_tentativa = [
-                ('gemini', self.gemini_ok, self._chamar_gemini, "Gemini 💎"),
-                ('groq', self.groq_ok, self._chamar_groq, "Groq ⚡")
-            ]
+        # Lógica de Chamada (Simplificada para focar no parsing)
+        resposta_bruta = ""
+        modelo_usado = ""
 
-        # 4. Loop de Execução (Tenta o 1º, se falhar tenta o 2º)
-        errors = []
+        # Tenta Groq Primeiro (exemplo)
+        if prioridade == 'groq' and self.groq_ok:
+            try:
+                resposta_bruta = self._chamar_groq(prompt_final)
+                modelo_usado = "Groq ⚡"
+            except:
+                pass # Tenta o próximo...
         
-        for nome, status_ok, funcao_chamar, label_visual in ordem_tentativa:
-            if status_ok:
-                try:
-                    # Se for o secundário rodando, avisa no log
-                    print(f"🔄 Tentando via {nome}...")
-                    resposta = funcao_chamar(prompt_final)
-                    
-                    # Limpeza básica
-                    resposta = resposta.strip()
-                    
-                    # SUCESSO! Retorna a resposta e quem respondeu
-                    return resposta, label_visual
-                except Exception as e:
-                    msg_erro = f"Falha em {nome}: {e}"
-                    print(f"❌ {msg_erro}")
-                    errors.append(msg_erro)
+        # Se não tiver resposta, tenta Gemini... (sua lógica de fallback continua aqui)
+        if not resposta_bruta and self.gemini_ok:
+            resposta_bruta = self._chamar_gemini(prompt_final)
+            modelo_usado = "Gemini 💎"
+
+        if not resposta_bruta:
+            return "Erro: IAs indisponíveis", "Offline"
+
+        # --- O PULO DO GATO: LIMPEZA DA RESPOSTA (PARSING) ---
+        if fase == '1':
+            # Normaliza para maiúsculo para evitar erros de digitação da IA
+            resp_upper = resposta_bruta.upper()
+            
+            # Procura a palavra chave final
+            if "VEREDITO: CERTO" in resp_upper or "VEREDITO:CERTO" in resp_upper:
+                return "CERTO", modelo_usado
+            elif "VEREDITO: ERRADO" in resp_upper or "VEREDITO:ERRADO" in resp_upper:
+                return "ERRADO", modelo_usado
+            elif "VEREDITO: ERRO" in resp_upper:
+                return "ERRO (Conteúdo não encontrado)", modelo_usado
             else:
-                errors.append(f"{nome} não estava configurado/ativo.")
-
-        # Se saiu do loop, ninguém respondeu
-        return f"⚠️ FALHA TOTAL: Nenhum modelo respondeu.\nErros: {errors}", "Offline 🔴"
+                # Se a IA se perdeu no formato, retorna tudo para você auditar
+                # Dica: Às vezes é bom ver o raciocínio quando ela erra
+                return f"⚠️ Resposta fora do padrão:\n{resposta_bruta}", modelo_usado
+        
+        else:
+            # Fase 2 retorna tudo (Ditado)
+            return resposta_bruta, modelo_usado
