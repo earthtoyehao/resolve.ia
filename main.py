@@ -39,22 +39,25 @@ def run_web_server():
 class BotState:
     def __init__(self):
         self.fase_atual = '1'
-        
-        # AQUI VOCÊ DEFINE A PRIORIDADE DIRETO NO CÓDIGO
-        # Opções: 'groq' ou 'gemini'
         self.modelo_prioridade = 'groq' 
         
+        # NOVA VARIÁVEL: A MEMÓRIA DO TEXTO DE APOIO
+        self.texto_apoio_atual = None 
+        
         self.logs = []
-        print(f"🚀 Inicializando Sistema Resolve.ia (Prioridade: {self.modelo_prioridade.upper()})...")
+        print(f"🚀 Inicializando (Prioridade: {self.modelo_prioridade.upper()})...")
         self.ai_system = ResolveIaBlindado()
 
+    def set_texto_apoio(self, texto):
+        self.texto_apoio_atual = texto
+        self.add_log("Memória", "Novo texto de apoio salvo", "Sucesso")
+
+    def get_texto_apoio(self):
+        return self.texto_apoio_atual
+
     def add_log(self, tipo, msg, status="Info"):
-        ts = datetime.now().strftime("%H:%M:%S")
-        entry = {"time": ts, "type": tipo, "msg": msg, "status": status}
-        self.logs.insert(0, entry)
-        print(f"[{ts}] {tipo} - {msg}")
-        if len(self.logs) > 30:
-            self.logs.pop()
+        # ... (seu código de log igual) ...
+        pass # Mantém o original aqui
 
 state = BotState()
 
@@ -130,40 +133,72 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         wav = converter_audio_nativo(ogg_file)
         if not wav: raise Exception("Falha Conversão")
 
-        # STT
+        # 1. Transcrição (STT)
         r = sr.Recognizer()
         with sr.AudioFile(wav) as source:
             texto = r.recognize_google(r.record(source), language="pt-BR")
         
         state.add_log("Transcrição", texto, "Sucesso")
         
-        # Edita a mensagem de espera com o texto transcrito
-        await context.bot.edit_message_text(chat_id=update.effective_chat.id, message_id=msg_wait.message_id, text=f"📝 {texto}")
-        
-        # Envia feedback de processamento
-        processing_msg = await update.message.reply_text(f"🧠 Processando via {state.modelo_prioridade.upper()}...") 
+        # Atualiza a mensagem mostrando o que ele entendeu
+        await context.bot.edit_message_text(
+            chat_id=update.effective_chat.id, 
+            message_id=msg_wait.message_id, 
+            text=f"📝 **Você disse:** {texto}"
+        )
 
-        # --- AQUI É A CONEXÃO COM A CLASSE BLINDADA ---
-        inputs = {
-            'user_input': texto,
-            'fase': state.fase_atual,
-            'prioridade': state.modelo_prioridade # Passa a config do init
-        }
+        # --- NOVA LÓGICA: DETECTOR DE CONTEXTO ---
         
-        # Executa a IA
-        resposta_final, modelo_utilizado = state.ai_system.processar(inputs)
+        # Pega os primeiros 30 caracteres e deixa minúsculo para verificar
+        inicio_frase = texto.lower()[:30]
+        gatilhos = ["texto de apoio", "novo texto", "leia o texto", "texto base"]
         
-        # Apaga msg de "Processando..." e manda a resposta
-        await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=processing_msg.message_id)
-        await update.message.reply_text(f"{resposta_final}")
+        # VERIFICAÇÃO 1: É apenas para guardar o texto?
+        if any(gatilho in inicio_frase for gatilho in gatilhos):
+            # Salva na memória da classe BotState
+            state.set_texto_apoio(texto)
+            
+            # Avisa o usuário e ENCERRA A FUNÇÃO AQUI (return)
+            await update.message.reply_text(
+                "🧠 **Texto Memorizado!**\n\n"
+                "Agora pode ler os itens (ex: 'Item 228...') que eu usarei este texto como base."
+            )
+            return # <--- O segredo: não chama a IA, só guarda.
 
-        # TTS (Áudio Resposta)
-        tts = gTTS(text=resposta_final, lang='pt', slow=False) 
-        mp3 = wav.replace(".wav", ".mp3")
-        tts.save(mp3)
-        await update.message.reply_voice(voice=open(mp3, 'rb'))
-        
-        state.add_log("Ciclo", f"Resp. via {modelo_utilizado}", "Finalizado")
+        # VERIFICAÇÃO 2: É uma questão/item para responder?
+        else:
+            prompt_final = texto
+            memoria = state.get_texto_apoio() # Pega o que estava guardado
+            
+            # Se tiver memória, junta tudo num pacote só
+            if memoria:
+                aviso = await update.message.reply_text("💡 Usando Texto de Apoio salvo...")
+                prompt_final = f"TEXTO DE APOIO (MEMÓRIA):\n{memoria}\n\nITEM PARA JULGAR:\n{texto}"
+            
+            # Envia feedback de processamento da IA
+            processing_msg = await update.message.reply_text(f"🧠 Analisando item via {state.modelo_prioridade.upper()}...") 
+
+            # --- AQUI É A CONEXÃO COM A CLASSE BLINDADA ---
+            inputs = {
+                'user_input': prompt_final, # Manda o texto gordo (Apoio + Pergunta)
+                'fase': state.fase_atual,
+                'prioridade': state.modelo_prioridade
+            }
+            
+            # Executa a IA
+            resposta_final, modelo_utilizado = state.ai_system.processar(inputs)
+            
+            # Apaga msg de "Processando..." e manda a resposta
+            await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=processing_msg.message_id)
+            await update.message.reply_text(f"{resposta_final}")
+
+            # TTS (Áudio Resposta)
+            tts = gTTS(text=resposta_final, lang='pt', slow=False) 
+            mp3 = wav.replace(".wav", ".mp3")
+            tts.save(mp3)
+            await update.message.reply_voice(voice=open(mp3, 'rb'))
+            
+            state.add_log("Ciclo", f"Resp. via {modelo_utilizado}", "Finalizado")
 
     except Exception as e:
         error_msg = str(e)
