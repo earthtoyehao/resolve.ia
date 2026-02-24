@@ -2,14 +2,78 @@ import os
 import google.generativeai as genai
 from groq import Groq
 from dotenv import load_dotenv
+import requests
 
 load_dotenv()
 
+# --- CLASSE AUXILIAR DE FERRAMENTAS (WIKIPÉDIA) ---
+class WikiTool:
+    def __init__(self):
+        # Endpoint oficial da Wikipédia em Português
+        self.api_url = "https://pt.wikipedia.org/w/api.php"
+
+    def search(self, query):
+        """
+        Faz uma busca direta na API da Wikipédia e retorna o resumo.
+        """
+        try:
+            # 1. Limpeza da query (para não buscar "Item 102 União Europeia")
+            termos_ignorados = ["julgue", "item", "texto de apoio", "texto base", "no que se refere", "acerca de"]
+            query_limpa = query.lower()
+            for termo in termos_ignorados:
+                query_limpa = query_limpa.replace(termo, "")
+            
+            query_limpa = query_limpa.strip()
+
+            # Se a query ficar vazia ou muito curta, aborta para não gastar tempo
+            if len(query_limpa) < 5:
+                return ""
+
+            print(f"🌍 WikiTool: Buscando por '{query_limpa}'...")
+
+            # 2. Parâmetros da API MediaWiki
+            params = {
+                "action": "query",
+                "format": "json",
+                "titles": query_limpa,
+                "prop": "extracts",
+                "explaintext": 1,   # Traz texto puro, sem HTML
+                "exintro": 1,       # Traz APENAS a introdução (resumo)
+                "redirects": 1      # Segue redirecionamentos automaticamente
+            }
+
+            # 3. Requisição HTTP
+            response = requests.get(self.api_url, params=params, timeout=2) # Timeout curto
+            response.raise_for_status()
+            data = response.json()
+
+            # 4. Processamento da Resposta
+            pages = data['query']['pages']
+            page_id = next(iter(pages))
+            
+            if page_id == "-1":
+                return ""
+
+            extract = pages[page_id].get('extract', '')
+
+            if not extract:
+                return ""
+
+            # Retorna formatado para entrar no Contexto
+            return f"\n[FONTE WIKIPÉDIA - ATUALIDADES/FATOS]: {extract[:800]}..."
+
+        except Exception as e:
+            print(f"⚠️ Erro na WikiTool: {e}")
+            return ""
+
+# --- CLASSE PRINCIPAL DO AGENTE ---
 class ResolveIaBlindado:
     def __init__(self):
+        # 1. INICIALIZA A FERRAMENTA WIKI
+        self.wiki = WikiTool()
+
         # --- CONFIGURAÇÃO GEMINI (TITULAR) ---
         try:
-            # Nota: Ajustei para 0.1 para ele ser menos criativo na Fase 1
             genai.configure(api_key=os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY"))
             self.gemini_model = genai.GenerativeModel(
                 model_name=os.getenv("GEMINI_MODEL", "gemini-1.5-flash"),
@@ -23,8 +87,7 @@ class ResolveIaBlindado:
         # --- CONFIGURAÇÃO GROQ (RESERVA DE LUXO) ---
         try:
             self.groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
-            # Pega do .env ou usa o Llama 3.3 como padrão
-            self.groq_model = os.getenv("GROQ_MODEL")
+            self.groq_model = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
             self.groq_ok = True
         except Exception as e:
             print(f"⚠️ Erro ao configurar Groq: {e}")
@@ -32,10 +95,9 @@ class ResolveIaBlindado:
 
     def _buscar_rag(self, query):
         """Simulação ou chamada real do Pinecone"""
-        print(f"🔍 Buscando contexto para: {query}")
+        print(f"🔍 Buscando contexto RAG para: {query}")
         # AQUI VAI SUA LÓGICA DE PINECONE
-        # return index.query(...) 
-        return f"[CONTEXTO RAG] O usuário perguntou sobre: {query}. (Aqui entraria o texto do PDF)"
+        return f"[CONTEXTO BIBLIOGRÁFICO] (Aqui entraria o texto do PDF sobre {query})"
 
     def _montar_prompt(self, query, contexto, fase):
         """Constrói o System Prompt adaptado para o CACD 2026"""
@@ -107,98 +169,86 @@ class ResolveIaBlindado:
 
     def _chamar_groq(self, prompt):
         print(f"⚡ Acionando Backup Groq: {self.groq_model}")
-        
         try:
             # LÓGICA ESPECIAL PARA O MODELO DE RACIOCÍNIO (GPT-OSS-120B)
-            # Verifica se o modelo configurado tem "oss" ou "120b" no nome
             if "oss" in self.groq_model or "120b" in self.groq_model:
                 chat_completion = self.groq_client.chat.completions.create(
                     messages=[{"role": "user", "content": prompt}],
-                    model=self.groq_model, # openai/gpt-oss-120b
-                    
-                    # Parâmetros exclusivos deste modelo
+                    model=self.groq_model,
                     reasoning_effort="medium", 
-                    temperature=1.0, # Precisa ser alta para raciocínio
+                    temperature=1.0,
                     max_completion_tokens=8192,
                     top_p=1,
                     stream=False,
                     stop=None
                 )
-            
-            # LÓGICA PADRÃO (Llama 3, Mixtral, etc)
             else:
                 chat_completion = self.groq_client.chat.completions.create(
                     messages=[{"role": "user", "content": prompt}],
                     model=self.groq_model,
-                    temperature=0.1, # Precisa ser baixa para precisão
+                    temperature=0.1,
                     max_completion_tokens=4096,
                     top_p=1,
                     stream=False
                 )
-
             return chat_completion.choices[0].message.content
-
         except Exception as e:
-            print(f"❌ Erro Crítico no Groq Principal ({self.groq_model}): {e}")
-            
-            # FALLBACK DE SEGURANÇA: Se o 120b falhar, tenta o Llama 3 básico
-            try:
-                print("🔄 Tentando Fallback para Llama 3.3 Versatile...")
-                fallback_resp = self.groq_client.chat.completions.create(
-                    messages=[{"role": "user", "content": prompt}],
-                    model="llama-3.3-70b-versatile",
-                    temperature=0.3
-                )
-                return fallback_resp.choices[0].message.content
-            except:
-                return "⚠️ Erro Fatal: Nem Gemini nem Groq responderam."
+            print(f"❌ Erro Crítico no Groq ({self.groq_model}): {e}")
+            return None # Retorna None para o loop tentar o próximo
 
     def processar(self, inputs):
         user_input = inputs.get('user_input')
         fase = inputs.get('fase')
-        prioridade = inputs.get('prioridade', 'gemini') # Padrão é Gemini
+        prioridade = inputs.get('prioridade', 'gemini')
 
-        # 1. Busca dados (RAG)
-        contexto = self._buscar_rag(user_input)
-
-        # 2. Monta o Prompt Único
-        prompt_final = self._montar_prompt(user_input, contexto, fase)
-
-        # 3. Define a ordem de execução baseada na prioridade
-        ordem_tentativa = []
+        # 1. Busca dados do RAG (Base Oficial)
+        contexto_rag = self._buscar_rag(user_input)
         
+        # 2. Busca dados da WIKIPÉDIA (Complemento de Atualidades)
+        # Só ativa se o input for maior que 15 chars (evita "olá", "sim", etc)
+        contexto_wiki = ""
+        if len(user_input) > 15:
+             contexto_wiki = self.wiki.search(user_input)
+
+        # 3. Consolidação do Contexto (RAG + Wiki)
+        # O prompt recebe tudo junto e trata como "Contexto"
+        contexto_final = f"{contexto_rag}\n{contexto_wiki}"
+
+        # 4. Monta o Prompt Único (com o contexto turbinado)
+        prompt_final = self._montar_prompt(user_input, contexto_final, fase)
+
+        # 5. Define a ordem de execução
+        ordem_tentativa = []
         if prioridade == 'groq':
             ordem_tentativa = [
                 ('groq', self.groq_ok, self._chamar_groq, "Groq ⚡"),
                 ('gemini', self.gemini_ok, self._chamar_gemini, "Gemini 💎")
             ]
-        else: # prioridade == 'gemini'
+        else:
             ordem_tentativa = [
                 ('gemini', self.gemini_ok, self._chamar_gemini, "Gemini 💎"),
                 ('groq', self.groq_ok, self._chamar_groq, "Groq ⚡")
             ]
 
-        # 4. Loop de Execução (Tenta o 1º, se falhar tenta o 2º)
+        # 6. Loop de Execução
         errors = []
-        
         for nome, status_ok, funcao_chamar, label_visual in ordem_tentativa:
             if status_ok:
                 try:
-                    # Se for o secundário rodando, avisa no log
                     print(f"🔄 Tentando via {nome}...")
                     resposta = funcao_chamar(prompt_final)
                     
-                    # Limpeza básica
-                    resposta = resposta.strip()
-                    
-                    # SUCESSO! Retorna a resposta e quem respondeu
-                    return resposta, label_visual
+                    if resposta: # Garante que não voltou None ou Vazio
+                        resposta = resposta.strip()
+                        return resposta, label_visual
+                    else:
+                         errors.append(f"{nome} retornou vazio.")
+
                 except Exception as e:
                     msg_erro = f"Falha em {nome}: {e}"
                     print(f"❌ {msg_erro}")
                     errors.append(msg_erro)
             else:
-                errors.append(f"{nome} não estava configurado/ativo.")
+                errors.append(f"{nome} off.")
 
-        # Se saiu do loop, ninguém respondeu
         return f"⚠️ FALHA TOTAL: Nenhum modelo respondeu.\nErros: {errors}", "Offline 🔴"
