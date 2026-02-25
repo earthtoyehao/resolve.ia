@@ -68,7 +68,6 @@ pinecone-plugin-assistant==3.0.2
 pinecone-plugin-interface==0.0.7
 propcache==0.4.1
 proto-plus==1.27.1
-protobuf==5.29.6
 pyarrow==23.0.1
 pyasn1==0.6.2
 pyasn1_modules==0.4.2
