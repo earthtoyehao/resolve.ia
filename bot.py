@@ -76,7 +76,7 @@ class ResolveIaBlindado:
         try:
             genai.configure(api_key=os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY"))
             self.gemini_model = genai.GenerativeModel(
-                model_name=os.getenv("GEMINI_MODEL", "gemini-1.5-flash"),
+                model_name=os.getenv("GEMINI_MODEL"),
                 generation_config={"temperature": 0.1} 
             )
             self.gemini_ok = True
@@ -87,7 +87,7 @@ class ResolveIaBlindado:
         # --- CONFIGURAÇÃO GROQ (RESERVA DE LUXO) ---
         try:
             self.groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
-            self.groq_model = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+            self.groq_model = os.getenv("GROQ_MODEL")
             self.groq_ok = True
         except Exception as e:
             print(f"⚠️ Erro ao configurar Groq: {e}")
@@ -195,6 +195,48 @@ class ResolveIaBlindado:
         except Exception as e:
             print(f"❌ Erro Crítico no Groq ({self.groq_model}): {e}")
             return None # Retorna None para o loop tentar o próximo
+
+    def _corrigir_transcricao(self, texto_sujo):
+        """
+        Agente Editor: Transforma transcrição "crua" em texto culto.
+        """
+        if not texto_sujo or len(texto_sujo) < 5:
+            return texto_sujo
+
+        print(f"🧹 Agente Editor: Analisando '{texto_sujo}'...")
+        
+        prompt_revisao = f"""
+        ATUE COMO UM REVISOR DE TEXTO DE ELITE PARA O CONCURSO DE DIPLOMACIA (CACD).
+        Você receberá uma transcrição bruta de áudio.
+        Sua missão é converter em texto formal, pontuado e gramaticalmente perfeito.
+        
+        INPUT BRUTO: "{texto_sujo}"
+        
+        DIRETRIZES:
+        1. PONTUAÇÃO INTELIGENTE: Adicione vírgulas, pontos e maiúsculas.
+        2. CORREÇÃO FONÉTICA: Corrija palavras ouvidas errado pelo contexto.
+        3. PADRONIZAÇÃO:
+           - "e tem"/"aí tem" + número -> "Item X".
+           - "texto de apoio" -> "Texto de Apoio".
+        4. MAIÚSCULAS: Nomes próprios e siglas (ONU, OEA).
+
+        OUTPUT: APENAS o texto revisado.
+        """
+        
+        try:
+            # Usa Groq Llama 3 (Rápido)
+            if self.groq_ok:
+                chat_completion = self.groq_client.chat.completions.create(
+                    messages=[{"role": "user", "content": prompt_revisao}],
+                    model="llama-3.3-70b-versatile",
+                    temperature=0.1,
+                    max_completion_tokens=1024
+                )
+                return chat_completion.choices[0].message.content.strip()
+            return texto_sujo 
+        except Exception as e:
+            print(f"⚠️ Falha Editor: {e}")
+            return texto_sujo
 
     def processar(self, inputs):
         user_input = inputs.get('user_input')
